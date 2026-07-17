@@ -1,15 +1,16 @@
 #!/bin/bash
 
 # 参数获取
-GITHUB_USER="$1"
-GITHUB_TOKEN="$2"
-GITEA_URL="$3"
-GITEA_USER="$4"
-GITEA_TOKEN="$5"
-WORK_DIR="$6"
+GITHUB_USER="GITHUB_USER"
+GITHUB_TOKEN="GITHUB_TOKEN"
+GITEA_URL="GITEA_URL"
+GITEA_USER="GITEA_USER"
+GITEA_TOKEN="GITEA_TOKEN"
+WORK_DIR="./tmp"
 SKIP_REPOS="$7"
 STATS_FILE="$8"
-
+GITHUB_HOST="gitee.com"
+GITHUB_API="https://gitee.com/api/v5/user/repos/"
 # 初始化统计
 init_stats() {
     cat > "$STATS_FILE" << EOF
@@ -36,15 +37,7 @@ update_stats() {
     local value="$2"
     local type="$3"  # 可以是 number 或 array
 
-    if [ "$type" = "array" ]; then
-        # 添加到数组
-        jq --arg value "$value" \
-            ".details.$key += [\$value]" "$STATS_FILE" > "$STATS_FILE.tmp"
-    else
-        # 更新数值
-        jq --arg key "$key" --argjson value "$value" \
-            ".$key = \$value" "$STATS_FILE" > "$STATS_FILE.tmp"
-    fi
+
     mv "$STATS_FILE.tmp" "$STATS_FILE"
 }
 
@@ -67,13 +60,13 @@ sync_repository() {
 
     # 克隆和推送
     [ -d "$repo" ] && rm -rf "$repo"
-    if ! git clone --mirror "https://${GITHUB_TOKEN:+$GITHUB_TOKEN@}github.com/$GITHUB_USER/$repo.git" "$repo"; then
+    if ! git clone --mirror "https://${GITHUB_USER}:${GITHUB_TOKEN}@${GITHUB_HOST}/$GITHUB_USER/$repo.git" "$repo"; then
         success=false
     else
         cd "$repo"
 
         # 尝试 mirror 推送
-        if ! git push --mirror "https://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git"; then
+        if ! git push --mirror "http://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git"; then
             echo "mirror 推送失败，尝试逐个分支推送..."
 
             # 获取所有分支
@@ -82,13 +75,13 @@ sync_repository() {
             # 推送每个分支
             git for-each-ref --format='%(refname:short)' refs/heads/ | while read branch; do
                 echo "推送分支: $branch"
-                if ! git push "https://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git" "$branch:$branch"; then
+                if ! git push "http://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git" "$branch:$branch"; then
                     success=false
                 fi
             done
 
             # 推送所有标签
-            if ! git push "https://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git" --tags; then
+            if ! git push "http://$GITEA_USER:$GITEA_TOKEN@${GITEA_URL#https://}/$GITEA_USER/$repo.git" --tags; then
                 success=false
             fi
         fi
@@ -97,10 +90,8 @@ sync_repository() {
 
     # 更新统计
     if [ "$success" = true ]; then
-        update_stats "success" "$(( $(jq '.success' "$STATS_FILE") + 1 ))" "number"
         update_stats "success_repos" "$repo" "array"
     else
-        update_stats "failed" "$(( $(jq '.failed' "$STATS_FILE") + 1 ))" "number"
         update_stats "failed_repos" "$repo" "array"
     fi
 }
@@ -115,8 +106,7 @@ main() {
 
     # 获取仓库列表
     repos=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-        "https://api.github.com/user/repos?per_page=100&type=all" | \
-        jq -r '.[].name')
+        "${GITHUB_API}?per_page=100&type=all")
 
     # 更新总仓库数
     total_repos=$(echo "$repos" | wc -l)
@@ -127,19 +117,16 @@ main() {
         # 检查是否跳过
         if echo "$SKIP_REPOS" | grep -q "$repo"; then
             echo "跳过仓库: $repo"
-            update_stats "skipped" "$(( $(jq '.skipped' "$STATS_FILE") + 1 ))" "number"
             update_stats "skipped_repos" "$repo" "array"
             continue
         fi
 
         echo "处理仓库: $repo"
-        update_stats "processed" "$(( $(jq '.processed' "$STATS_FILE") + 1 ))" "number"
         sync_repository "$repo"
     done
 
     # 更新结束时间
-    jq --arg time "$(date '+%Y-%m-%d %H:%M:%S')" \
-        '.end_time = $time' "$STATS_FILE" > "$STATS_FILE.tmp"
+
     mv "$STATS_FILE.tmp" "$STATS_FILE"
 }
 
